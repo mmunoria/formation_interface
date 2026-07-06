@@ -1,0 +1,37 @@
+# Configuration for the 5-drone formation node.
+#
+# The lists below are index-aligned: entry i of every list refers to the same
+# physical drone. Adjust the namespaces / pose topics to match your setup.
+formation_node:
+  ros__parameters:
+    # PX4 uXRCE-DDS namespaces (one micro-XRCE agent per vehicle instance).
+    drone_namespaces: ["px4_1", "px4_2", "px4_3", "px4_4", "px4_5"]
+
+    # MAVLink system id per vehicle (usually instance_id + 1). Used in
+    # VehicleCommand for arming / mode changes.
+    system_ids: [2, 3, 4, 5, 6]
+
+    # OptiTrack -> ROS2 pose topics (one rigid body per drone).
+    # >>> CHANGE THESE to your actual bridge topic names. <<<
+    pose_topics:
+      - "/vrpn_mocap/drone1/pose"
+      - "/vrpn_mocap/drone2/pose"
+      - "/vrpn_mocap/drone3/pose"
+      - "/vrpn_mocap/drone4/pose"
+      - "/vrpn_mocap/drone5/pose"
+
+    # Message type on the pose topics: "PoseStamped" or "Odometry".
+    pose_topic_type: "PoseStamped"
+
+    # Command backend: "px4" (real flight) or "sim" (mock, no hardware).
+    backend: "px4"
+
+    control_rate: 20.0          # Hz - offboard heartbeat / setpoint rate
+    position_tolerance: 0.15    # m  - "in position" threshold
+    settle_cycles: 10           # consecutive checks all-in-position before success
+    goal_timeout: 60.0          # s  - abort a formation goal after this long
+
+    # SAFETY: when true the node auto-switches each drone to OFFBOARD and ARMS it
+    # once setpoints are streaming. Leave false and arm manually (QGroundControl)
+    # until you trust the setup.
+    auto_arm: false

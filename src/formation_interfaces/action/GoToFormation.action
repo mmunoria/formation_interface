@@ -1,0 +1,17 @@
+# ============================ GOAL ============================
+# Command the swarm to assume a named formation with the given geometry.
+string formation             # one of: line, column, v, circle, grid, diamond
+float32 spacing              # spacing between neighbouring drones [m]
+float32 altitude             # target flight altitude, positive up [m]
+geometry_msgs/Point center   # centre of the formation, world/ENU frame [m]
+float32 yaw                  # heading the whole formation faces [rad]
+---
+# =========================== RESULT ===========================
+bool success
+string message
+---
+# ========================== FEEDBACK =========================
+float32 progress             # 0.0 .. 1.0  (fraction of drones within tolerance)
+uint8 drones_in_position
+uint8 drones_total
+float32 max_error            # worst per-drone distance to its target [m], -1 if unknown
