@@ -31,6 +31,7 @@ setup(
         'console_scripts': [
             'interface_node = formation_interface.interface_node:main',
             'formation_node = formation_interface.formation_node:main',
+            'gui_node = formation_interface.gui_node:main',
         ],
     },
 )

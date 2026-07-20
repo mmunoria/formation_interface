@@ -26,7 +26,12 @@ from nav_msgs.msg import Odometry
 from formation_interfaces.action import GoToFormation
 
 from formation_interface.drone_commander import make_commander
-from formation_interface.formations import FORMATIONS, compute_targets
+from formation_interface.formations import (
+    CUSTOM,
+    FORMATIONS,
+    compute_targets,
+    transform_offsets,
+)
 
 
 def _dist(a, b):
@@ -178,18 +183,31 @@ class FormationNode(Node):
         result = GoToFormation.Result()
 
         formation = req.formation.lower().strip()
-        if formation not in FORMATIONS:
-            goal_handle.abort()
-            result.success = False
-            result.message = (
-                f"unknown formation '{req.formation}'; options: {list(FORMATIONS)}")
-            return result
-
         spacing = req.spacing if req.spacing > 0 else 1.5
         altitude = req.altitude if req.altitude > 0 else 1.5
         center = (req.center.x, req.center.y)
 
-        raw = compute_targets(formation, self.n, spacing, center, altitude, req.yaw)
+        if formation == CUSTOM:
+            if len(req.custom_offsets) != self.n:
+                goal_handle.abort()
+                result.success = False
+                result.message = (
+                    f"custom formation needs exactly {self.n} offsets, "
+                    f"got {len(req.custom_offsets)}")
+                return result
+            raw = transform_offsets(
+                [(p.x, p.y, p.z) for p in req.custom_offsets],
+                center, altitude, req.yaw)
+        elif formation in FORMATIONS:
+            raw = compute_targets(
+                formation, self.n, spacing, center, altitude, req.yaw)
+        else:
+            goal_handle.abort()
+            result.success = False
+            result.message = (
+                f"unknown formation '{req.formation}'; "
+                f"options: {list(FORMATIONS)} or '{CUSTOM}' with offsets")
+            return result
         targets = self._assign(raw)
         for i in range(self.n):
             self.targets[i] = targets[i]

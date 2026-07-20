@@ -1,8 +1,11 @@
-# Configuration for the 5-drone formation node.
+# Configuration for the 5-drone formation system.
 #
 # The lists below are index-aligned: entry i of every list refers to the same
 # physical drone. Adjust the namespaces / pose topics to match your setup.
-formation_node:
+#
+# The wildcard key applies to every node that loads this file (formation_node
+# AND the GUI); each node only picks up the parameters it declares.
+/**:
   ros__parameters:
     # PX4 uXRCE-DDS namespaces (one micro-XRCE agent per vehicle instance).
     drone_namespaces: ["px4_1", "px4_2", "px4_3", "px4_4", "px4_5"]

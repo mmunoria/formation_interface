@@ -3,14 +3,20 @@
 A menu-driven terminal front-end that sends ``GoToFormation`` goals to the
 formation node and prints live feedback.
 
-The old version called ``input()`` inside a timer, which blocked the ROS
-executor.  Here rclpy spins in a background thread while the blocking menu runs
-on the main thread, so the two never fight.  This same node is what a future
-Qt/GUI front-end will wrap - the GUI just calls ``send_formation`` instead of
-the text menu.
+Three built-in formations (line, v, circle) are always offered, and the
+operator can *create any formation* by entering one offset per drone; those
+custom formations can be saved as named presets, which persist to
+``~/.formation_presets.json`` and reappear in the menu on the next run.
+
+rclpy spins in a background thread while the blocking menu runs on the main
+thread, so the two never fight.  This same node is what a future Qt/GUI
+front-end will wrap - the GUI just calls ``send_formation`` instead of the
+text menu.
 """
 
+import json
 import threading
+from pathlib import Path
 
 import rclpy
 from rclpy.action import ActionClient
@@ -20,9 +26,10 @@ from geometry_msgs.msg import Point
 
 from formation_interfaces.action import GoToFormation
 
-from formation_interface.formations import FORMATIONS
+from formation_interface.formations import CUSTOM, FORMATIONS
 
 MENU = list(FORMATIONS)
+PRESET_FILE = Path.home() / ".formation_presets.json"
 
 
 class InterfaceNode(Node):
@@ -33,21 +40,39 @@ class InterfaceNode(Node):
         self._goal_handle = None
 
     # ------------------------------ public API ---------------------------------
-    def send_formation(self, formation, spacing, altitude, yaw=0.0):
-        """Send one formation goal and block until it finishes (result printed)."""
+    def send_formation(self, formation, spacing, altitude, yaw=0.0, offsets=None):
+        """Send one formation goal and block until it finishes (result printed).
+
+        Args:
+            formation: a built-in name, or anything when ``offsets`` is given
+                       (the goal is then sent as a custom formation).
+            offsets:   optional list of per-drone (x, y[, z]) offsets from the
+                       formation centre - this is how arbitrary formations are
+                       commanded.
+        """
         if not self._client.wait_for_server(timeout_sec=5.0):
             print("  !! formation_node action server not available. Is it running?")
             return
 
         goal = GoToFormation.Goal()
-        goal.formation = formation
         goal.spacing = float(spacing)
         goal.altitude = float(altitude)
         goal.center = Point(x=0.0, y=0.0, z=0.0)
         goal.yaw = float(yaw)
 
+        if offsets is not None:
+            goal.formation = CUSTOM
+            for off in offsets:
+                z = float(off[2]) if len(off) > 2 else 0.0
+                goal.custom_offsets.append(
+                    Point(x=float(off[0]), y=float(off[1]), z=z))
+            label = f"custom '{formation}'" if formation != CUSTOM else "custom"
+        else:
+            goal.formation = formation
+            label = f"'{formation}'"
+
         self._done.clear()
-        print(f"  -> sending '{formation}' (spacing={spacing} m, altitude={altitude} m)")
+        print(f"  -> sending {label} (altitude={altitude} m)")
         future = self._client.send_goal_async(goal, feedback_callback=self._on_feedback)
         future.add_done_callback(self._on_response)
         self._done.wait()
@@ -75,6 +100,26 @@ class InterfaceNode(Node):
         self._done.set()
 
 
+# ------------------------------ preset storage ---------------------------------
+def load_presets():
+    try:
+        with open(PRESET_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {str(k): [tuple(map(float, o)) for o in v] for k, v in data.items()}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_presets(presets):
+    try:
+        with open(PRESET_FILE, "w", encoding="utf-8") as fh:
+            json.dump({k: [list(o) for o in v] for k, v in presets.items()},
+                      fh, indent=2)
+    except OSError as exc:
+        print(f"  (could not save presets: {exc})")
+
+
+# ------------------------------ terminal menu ----------------------------------
 def _ask_float(prompt, default):
     raw = input(f"{prompt} [{default}]: ").strip()
     if not raw:
@@ -86,24 +131,94 @@ def _ask_float(prompt, default):
         return default
 
 
+def _parse_offset(raw):
+    parts = [p for p in raw.replace(",", " ").split() if p]
+    if len(parts) not in (2, 3):
+        raise ValueError(raw)
+    x, y = float(parts[0]), float(parts[1])
+    z = float(parts[2]) if len(parts) == 3 else 0.0
+    return (x, y, z)
+
+
+def create_custom(presets):
+    """Interactively define an arbitrary formation, one offset per drone.
+
+    Returns (name, offsets) or None if aborted.
+    """
+    print("\n--- Create a formation ---")
+    print("Enter one offset per drone, relative to the formation centre, in metres.")
+    print("Format: 'x y' or 'x y z' (z is added to the base altitude).")
+    print("Example V for 3 drones:  '0 0', '-1 1', '-1 -1'.  Blank line aborts.")
+
+    n = int(_ask_float("number of drones", 5))
+    offsets = []
+    for i in range(n):
+        while True:
+            raw = input(f"  drone {i + 1} offset: ").strip()
+            if not raw:
+                print("  (aborted)")
+                return None
+            try:
+                offsets.append(_parse_offset(raw))
+                break
+            except ValueError:
+                print("    (couldn't parse - use 'x y' or 'x y z')")
+
+    name = input("save as preset name (blank = use once): ").strip().lower()
+    if name:
+        if name in MENU or name == CUSTOM:
+            print(f"  ('{name}' is reserved, not saving)")
+            name = CUSTOM
+        else:
+            presets[name] = offsets
+            save_presets(presets)
+            print(f"  (saved - '{name}' will appear in the menu)")
+    else:
+        name = CUSTOM
+    return name, offsets
+
+
 def run_menu(node):
+    presets = load_presets()
     while rclpy.ok():
+        preset_names = sorted(presets)
         print("\n=== Drone Formation Control ===")
         for i, name in enumerate(MENU, 1):
             print(f"  {i}) {name}")
+        for j, name in enumerate(preset_names, len(MENU) + 1):
+            print(f"  {j}) {name} (saved, {len(presets[name])} drones)")
+        print("  c) create a new formation")
         print("  0) quit")
 
         choice = input("select formation: ").strip().lower()
         if choice in ("0", "q", "quit", "exit"):
             break
-        if not choice.isdigit() or not (1 <= int(choice) <= len(MENU)):
-            print("  (invalid choice)")
+
+        if choice in ("c", "create", "custom"):
+            created = create_custom(presets)
+            if created is None:
+                continue
+            name, offsets = created
+            altitude = _ask_float("  altitude (m)", 1.5)
+            node.send_formation(name, 0.0, altitude, offsets=offsets)
             continue
 
-        formation = MENU[int(choice) - 1]
-        spacing = _ask_float("  spacing (m)", 1.5)
-        altitude = _ask_float("  altitude (m)", 1.5)
-        node.send_formation(formation, spacing, altitude)
+        if not choice.isdigit():
+            print("  (invalid choice)")
+            continue
+        idx = int(choice)
+
+        if 1 <= idx <= len(MENU):
+            formation = MENU[idx - 1]
+            spacing = _ask_float("  spacing (m)", 1.5)
+            altitude = _ask_float("  altitude (m)", 1.5)
+            node.send_formation(formation, spacing, altitude)
+        elif len(MENU) < idx <= len(MENU) + len(preset_names):
+            name = preset_names[idx - len(MENU) - 1]
+            altitude = _ask_float("  altitude (m)", 1.5)
+            node.send_formation(name, 0.0, altitude, offsets=presets[name])
+        else:
+            print("  (invalid choice)")
 
 
 def main(args=None):

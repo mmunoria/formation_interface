@@ -1,10 +1,15 @@
 # ============================ GOAL ============================
 # Command the swarm to assume a named formation with the given geometry.
-string formation             # one of: line, column, v, circle, grid, diamond
-float32 spacing              # spacing between neighbouring drones [m]
+string formation             # one of: line, v, circle - or "custom" (see below)
+float32 spacing              # spacing between neighbouring drones [m] (built-ins only)
 float32 altitude             # target flight altitude, positive up [m]
 geometry_msgs/Point center   # centre of the formation, world/ENU frame [m]
 float32 yaw                  # heading the whole formation faces [rad]
+
+# When formation == "custom": one offset per drone, relative to `center`, in the
+# formation-local frame (rotated by yaw). z is an offset added to `altitude`,
+# so custom formations may be 3-D. Length must equal the number of drones.
+geometry_msgs/Point[] custom_offsets
 ---
 # =========================== RESULT ===========================
 bool success
