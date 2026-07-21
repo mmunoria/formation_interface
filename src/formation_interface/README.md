@@ -83,11 +83,37 @@ Index-aligned lists (entry *i* = same drone). **You must set:**
   QGroundControl. When `true`, the node switches each drone to OFFBOARD and arms
   it automatically once setpoints are streaming.
 
+## Arena, path planning & drone status
+
+- **Drone count is config-driven (1–8)**: the length of the lists in
+  `drones.yaml` decides everything; no code changes to go from 3 to 8 drones.
+- **Arena**: the indoor flight space is a rectangle
+  (`arena_min_x/max_x/min_y/max_y`) drawn on the GUI map. Formation targets
+  outside it are rejected with the offending drone IDs.
+- **Path planning**: on every accepted goal, a 2-D prioritized grid-A* planner
+  ([`planning.py`](formation_interface/planning.py), pure Python, unit-tested)
+  plans each drone a path treating the *other drones as obstacles* (positions +
+  already-planned paths, inflated by `safety_radius`). For swap-like moves
+  where crossing is unavoidable, it falls back to endpoint obstacles and logs
+  which drones cross. Drones then follow their waypoints sequentially
+  (`waypoint_tolerance` advances them); altitude is constant.
+- **Paths are published** as latched `nav_msgs/Path` on `/drone<ID>/path` —
+  the GUI (and rviz) draw them; late subscribers still get the last plan.
+- **Active status**: each drone publishes a `std_msgs/Bool` heartbeat on
+  `/drone<ID>/active` (the sim backend does this for you; real drones publish
+  onboard). The GUI shows per-drone active/inactive rows and greys out drones
+  whose heartbeat is older than `active_timeout` (default 2 s).
+
 ## Frames
 
 Formation math is in world **ENU** (x=east, y=north, z=up). The PX4 backend
 converts to **NED** for `TrajectorySetpoint`. This assumes OptiTrack is fused
 into PX4's EKF so both share an origin — verify with a single drone first.
+
+**Known calibration issue (fix in Motive, not in code):** sample OptiTrack data
+showed orientation x≈-0.99 (≈180° roll) and z slightly negative on the ground —
+Motive is likely streaming **Y-up**. Set *Streaming → Up Axis: Z* in Motive so
+poses arrive Z-up/ENU; the code assumes correct Z-up data.
 
 ## Assumptions to verify for your setup
 

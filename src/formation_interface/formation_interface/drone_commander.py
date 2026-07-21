@@ -1,21 +1,8 @@
-"""Per-drone command backends.
-
-A *commander* owns the output side for a single vehicle: it takes a world/ENU
-target position and streams the appropriate setpoints.  Two implementations:
-
-* :class:`PX4Commander` - streams PX4 offboard position setpoints over
-  uXRCE-DDS (``/<ns>/fmu/in/...``).  This is the real flight backend.
-* :class:`MockCommander` - integrates a point-mass toward the target and
-  publishes a fake pose, so the whole interface -> action -> formation pipeline
-  can be exercised with no PX4 and no OptiTrack.  Selected with ``backend:=sim``.
-
-All PX4 message imports are done lazily inside :class:`PX4Commander` so that the
-``sim`` backend (and the unit tests) work even where ``px4_msgs`` is absent.
-"""
 
 import math
 
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Bool
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -24,10 +11,15 @@ from rclpy.qos import (
 )
 
 
-def make_commander(backend, node, namespace, system_id, pose_topic):
-    """Factory: return the commander matching ``backend`` ('px4' or 'sim')."""
+def make_commander(backend, node, namespace, system_id, pose_topic, drone_id):
+    """Factory: return the commander matching ``backend`` ('px4' or 'sim').
+
+    ``drone_id`` is the display ID (index + 1) used for per-drone topics like
+    ``/drone<ID>/active``. Real drones publish their active flag onboard, so
+    only the sim backend uses it here.
+    """
     if backend == "sim":
-        return MockCommander(node, namespace, pose_topic)
+        return MockCommander(node, namespace, pose_topic, drone_id)
     return PX4Commander(node, namespace, system_id)
 
 
@@ -147,7 +139,7 @@ class MockCommander:
     closing the loop so convergence feedback works end-to-end without hardware.
     """
 
-    def __init__(self, node, namespace, pose_topic, speed=1.5):
+    def __init__(self, node, namespace, pose_topic, drone_id, speed=1.5):
         self.node = node
         self.ns = namespace
         self.speed = float(speed)          # m/s
@@ -156,6 +148,9 @@ class MockCommander:
         self._last = node.get_clock().now()
         self.armed = True
         self._pub = node.create_publisher(PoseStamped, pose_topic, 10)
+        # Liveness heartbeat - a real drone publishes this onboard.
+        self._active_pub = node.create_publisher(
+            Bool, f"/drone{int(drone_id)}/active", 10)
 
     def set_target_enu(self, x, y, z, yaw=0.0):
         self._target = [float(x), float(y), float(z)]
@@ -181,6 +176,10 @@ class MockCommander:
         msg.pose.position.z = self._pose[2]
         msg.pose.orientation.w = 1.0
         self._pub.publish(msg)
+
+        active = Bool()
+        active.data = True
+        self._active_pub.publish(active)
 
     def ready_to_arm(self):
         return True

@@ -34,6 +34,23 @@
     settle_cycles: 10           # consecutive checks all-in-position before success
     goal_timeout: 60.0          # s  - abort a formation goal after this long
 
+    # Rectangular indoor arena (map frame, metres). Measure your OptiTrack
+    # capture volume and set these to match - formations whose targets fall
+    # outside are rejected, and paths are only planned inside this box.
+    arena_min_x: -4.0
+    arena_max_x: 4.0
+    arena_min_y: -3.0
+    arena_max_y: 3.0
+
+    # Path planning (drones are mutual obstacles).
+    plan_cell_size: 0.1         # m - planning grid resolution
+    safety_radius: 0.4          # m - obstacle inflation around drones/paths
+    waypoint_tolerance: 0.25    # m - advance to the next waypoint within this
+
+    # GUI: a drone is shown active if its /drone<ID>/active heartbeat was
+    # heard within this window.
+    active_timeout: 2.0         # s
+
     # SAFETY: when true the node auto-switches each drone to OFFBOARD and ARMS it
     # once setpoints are streaming. Leave false and arm manually (QGroundControl)
     # until you trust the setup.

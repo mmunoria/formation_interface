@@ -1,0 +1,26 @@
+# Configuration for the live multi-drone monitor + path planner.
+#
+# Unlike drones.yaml, this does NOT list specific drones - the monitor
+# discovers whatever drones are currently publishing DronePose/DroneActive
+# (each message carries its own drone_id) and only shows the active ones.
+#
+# The wildcard key applies to every node that loads this file (formation_gui
+# node AND the mock OptiTrack publisher used for hardware-free dry runs).
+/**:
+  ros__parameters:
+    # Indoor flight area, world/ENU metres. Must match the physical space
+    # covered by your OptiTrack volume.
+    map_xmin: -5.0
+    map_xmax: 5.0
+    map_ymin: -5.0
+    map_ymax: 5.0
+
+    cell_size: 0.25        # m - path planner grid resolution
+    safety_radius: 0.5     # m - other active drones block cells within this radius
+    active_timeout: 2.0    # s - no DroneActive heartbeat within this long -> inactive
+
+    # mock_optitrack_node only (ignored by formation_gui):
+    num_drones: 3           # how many simulated drones to publish
+    rate: 10.0               # Hz, simulated pose publish rate
+    speed: 0.5                # m/s, simulated wander speed
+    toggle_period: 15.0       # s between one simulated drone flipping active/inactive

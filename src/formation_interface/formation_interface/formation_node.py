@@ -21,7 +21,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 
 from formation_interfaces.action import GoToFormation
 
@@ -31,6 +37,17 @@ from formation_interface.formations import (
     FORMATIONS,
     compute_targets,
     transform_offsets,
+)
+from formation_interface.planning import Arena, PlanningError, plan_paths
+
+MAX_DRONES = 8
+
+# Late subscribers (GUI, rviz) should still receive the last published path.
+LATCHED_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
 )
 
 
@@ -57,6 +74,14 @@ class FormationNode(Node):
         self.declare_parameter("settle_cycles", 10)
         self.declare_parameter("auto_arm", False)
         self.declare_parameter("goal_timeout", 60.0)               # s
+        # Rectangular indoor arena (map frame, metres) + planner settings.
+        self.declare_parameter("arena_min_x", -4.0)
+        self.declare_parameter("arena_max_x", 5.0)
+        self.declare_parameter("arena_min_y", -2.0)
+        self.declare_parameter("arena_max_y", 2.0)
+        self.declare_parameter("plan_cell_size", 0.1)              # m
+        self.declare_parameter("safety_radius", 0.4)               # m
+        self.declare_parameter("waypoint_tolerance", 0.25)         # m
 
         g = self.get_parameter
         self.namespaces = list(g("drone_namespaces").value)
@@ -69,7 +94,18 @@ class FormationNode(Node):
         self.settle_cycles = int(g("settle_cycles").value)
         self.auto_arm = bool(g("auto_arm").value)
         self.goal_timeout = float(g("goal_timeout").value)
+        self.arena = Arena(
+            float(g("arena_min_x").value), float(g("arena_max_x").value),
+            float(g("arena_min_y").value), float(g("arena_max_y").value))
+        self.plan_cell = float(g("plan_cell_size").value)
+        self.safety_radius = float(g("safety_radius").value)
+        self.waypoint_tol = float(g("waypoint_tolerance").value)
 
+        if len(self.namespaces) > MAX_DRONES:
+            self.get_logger().warn(
+                f"{len(self.namespaces)} drones configured; "
+                f"max is {MAX_DRONES} - ignoring the extras")
+            self.namespaces = self.namespaces[:MAX_DRONES]
         self.n = len(self.namespaces)
         self._cb = ReentrantCallbackGroup()
 
@@ -78,14 +114,19 @@ class FormationNode(Node):
         self.targets = [None] * self.n     # active (x, y, z) ENU target or None
         self._armed = [False] * self.n
         self._active = False               # a goal is currently executing
+        self._paths = [None] * self.n      # planned [(x, y), ...] per drone
+        self._wp = [0] * self.n            # index of the waypoint being flown to
 
         self.commanders = []
+        self._path_pubs = []
         for i, ns in enumerate(self.namespaces):
             sysid = self.system_ids[i] if i < len(self.system_ids) else i + 2
             topic = self.pose_topics[i] if i < len(self.pose_topics) else f"/{ns}/pose"
             self.commanders.append(
-                make_commander(self.backend, self, ns, sysid, topic))
+                make_commander(self.backend, self, ns, sysid, topic, i + 1))
             self._make_pose_sub(i, topic)
+            self._path_pubs.append(
+                self.create_publisher(Path, f"/drone{i + 1}/path", LATCHED_QOS))
 
         # ------------------------------ ros interfaces --------------------------
         self.create_timer(
@@ -120,11 +161,16 @@ class FormationNode(Node):
 
     # ------------------------------ control loop -------------------------------
     def _control_loop(self):
-        """Stream setpoints; handle the (optional) auto-arm sequence per drone."""
+        """Stream setpoints; handle the (optional) auto-arm sequence per drone.
+
+        Runs for every commander even with no goal: the PX4 backend self-guards
+        (no setpoints until a target is set) while the sim backend publishes its
+        pose + active heartbeat from startup, so the GUI sees drones immediately.
+        """
         for i, cmd in enumerate(self.commanders):
+            cmd.publish_heartbeat()
             if self.targets[i] is None:
                 continue
-            cmd.publish_heartbeat()
             if self.auto_arm and not self._armed[i] and cmd.ready_to_arm():
                 cmd.engage_offboard()
                 cmd.arm()
@@ -160,6 +206,42 @@ class FormationNode(Node):
             used.add(best)
             result[i] = targets[best]
         return result
+
+    # ------------------------------ path following -----------------------------
+    def _advance_waypoints(self, altitude, yaw):
+        """Feed each drone the next waypoint once it reaches the current one.
+
+        The last waypoint of every path is the formation target itself, so the
+        existing convergence check (`_errors` against `self.targets`) is
+        untouched.
+        """
+        for i in range(self.n):
+            path = self._paths[i]
+            if path is None or self._wp[i] >= len(path) - 1:
+                continue
+            pose = self.poses[i]
+            if pose is None:
+                continue
+            wx, wy = path[self._wp[i]]
+            if math.hypot(pose[0] - wx, pose[1] - wy) <= self.waypoint_tol:
+                self._wp[i] += 1
+                nx, ny = path[self._wp[i]]
+                self.commanders[i].set_target_enu(nx, ny, altitude, yaw=yaw)
+
+    def _publish_path(self, i, path, altitude):
+        """Publish drone i's planned path as nav_msgs/Path (latched)."""
+        msg = Path()
+        msg.header.frame_id = "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        for (x, y) in path:
+            ps = PoseStamped()
+            ps.header.frame_id = "map"
+            ps.pose.position.x = float(x)
+            ps.pose.position.y = float(y)
+            ps.pose.position.z = float(altitude)
+            ps.pose.orientation.w = 1.0
+            msg.poses.append(ps)
+        self._path_pubs[i].publish(msg)
 
     # ------------------------------ action callbacks ---------------------------
     def _goal_cb(self, goal_request):
@@ -209,12 +291,54 @@ class FormationNode(Node):
                 f"options: {list(FORMATIONS)} or '{CUSTOM}' with offsets")
             return result
         targets = self._assign(raw)
+
+        # ---- arena bounds check (R3) ----
+        outside = [i + 1 for i, t in enumerate(targets)
+                   if not self.arena.contains(t[0], t[1])]
+        if outside:
+            goal_handle.abort()
+            result.success = False
+            result.message = (
+                f"targets outside the arena for drone(s) {outside} - "
+                f"shrink spacing or move the formation centre")
+            return result
+
+        # ---- path planning, drones as mutual obstacles (R4) ----
+        missing = [i + 1 for i in range(self.n) if self.poses[i] is None]
+        if missing:
+            goal_handle.abort()
+            result.success = False
+            result.message = (
+                f"no pose received for drone(s) {missing} - "
+                f"check the OptiTrack topics")
+            return result
+
+        try:
+            paths, crossings = plan_paths(
+                [(p[0], p[1]) for p in self.poses],
+                [(t[0], t[1]) for t in targets],
+                self.arena, self.plan_cell, self.safety_radius)
+        except PlanningError as exc:
+            goal_handle.abort()
+            result.success = False
+            result.message = f"path planning failed: {exc}"
+            return result
+        if crossings:
+            self.get_logger().warn(
+                f"drone(s) {crossings} cross other planned paths "
+                f"(unavoidable for this formation)")
+
         for i in range(self.n):
+            self._paths[i] = paths[i]
+            self._wp[i] = 1 if len(paths[i]) > 1 else 0
+            self._publish_path(i, paths[i], altitude)
             self.targets[i] = targets[i]
-            self.commanders[i].set_target_enu(*targets[i], yaw=req.yaw)
+            wx, wy = paths[i][self._wp[i]]
+            self.commanders[i].set_target_enu(wx, wy, altitude, yaw=req.yaw)
 
         self.get_logger().info(
-            f"forming '{formation}': spacing={spacing} m, alt={altitude} m")
+            f"forming '{formation}': spacing={spacing} m, alt={altitude} m, "
+            f"paths planned ({sum(len(p) for p in paths)} waypoints total)")
 
         rate = self.create_rate(5.0)          # feedback / check rate
         settle = 0
@@ -226,6 +350,8 @@ class FormationNode(Node):
                 result.success = False
                 result.message = "canceled by operator"
                 return result
+
+            self._advance_waypoints(altitude, req.yaw)
 
             errs = self._errors()
             finite = [e for e in errs if e != float("inf")]
