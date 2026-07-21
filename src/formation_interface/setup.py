@@ -32,6 +32,10 @@ setup(
             'interface_node = formation_interface.interface_node:main',
             'formation_node = formation_interface.formation_node:main',
             'gui_node = formation_interface.gui_node:main',
+            'monitor_gui = formation_interface.monitor_gui:main',
+            'mock_optitrack_node = formation_interface.mock_optitrack:main',
+            'drone_active_publisher = formation_interface.drone_active_publisher:main',
+            'optitrack_pose_bridge = formation_interface.optitrack_pose_bridge:main',
         ],
     },
 )

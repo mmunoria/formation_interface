@@ -19,8 +19,18 @@
     safety_radius: 0.5     # m - other active drones block cells within this radius
     active_timeout: 2.0    # s - no DroneActive heartbeat within this long -> inactive
 
-    # mock_optitrack_node only (ignored by formation_gui):
+    # mock_optitrack_node only (ignored by formation_gui) - full hardware-free
+    # fleet simulation (fake pose + fake active heartbeat for every drone):
     num_drones: 3           # how many simulated drones to publish
     rate: 10.0               # Hz, simulated pose publish rate
     speed: 0.5                # m/s, simulated wander speed
     toggle_period: 15.0       # s between one simulated drone flipping active/inactive
+
+    # drone_active_publisher only - one instance per real drone, each with
+    # its own drone_id (override per-instance, not shared via this file):
+    drone_id: 1              # which drone this instance's heartbeat is for
+    active_rate: 2.0          # Hz, DroneActive heartbeat publish rate
+
+    # optitrack_pose_bridge only - one instance per real drone. Republishes
+    # that drone's real OptiTrack pose as DronePose (drone_id above).
+    source_topic: "/optitrack_pose"   # real OptiTrack PoseStamped topic
