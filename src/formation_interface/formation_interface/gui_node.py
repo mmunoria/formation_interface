@@ -138,7 +138,7 @@ class GuiBackend(Node):
 
     # ------------------------------ sending ------------------------------------
     def send(self, formation, spacing, altitude, yaw,
-             center=(0.0, 0.0), offsets=None):
+             center=(0.0, 0.0), offsets=None, drone_ids=None):
         if not self._client.server_is_ready():
             self.events.put(("result", False, "formation_node not available"))
             return
@@ -148,6 +148,8 @@ class GuiBackend(Node):
         goal.altitude = float(altitude)
         goal.center = Point(x=float(center[0]), y=float(center[1]), z=0.0)
         goal.yaw = float(yaw)
+        if drone_ids:
+            goal.drone_ids = [int(d) for d in drone_ids]
         if offsets is not None:
             goal.formation = CUSTOM
             for off in offsets:
@@ -205,6 +207,8 @@ class App(tk.Tk):
         self.targets = []            # ghost markers currently displayed
         self.design_points = []      # world (x, y) clicks in design mode
         self.design_mode = False
+        self.single_target_mode = False
+        self.single_target_point = None    # world (x, y) click, single-drone mode
         self.busy = False
 
         self._build_left_panel()
@@ -283,6 +287,30 @@ class App(tk.Tk):
             drow2, text="save preset", width=11, state="disabled",
             command=self._save_designed)
         self.save_design_btn.pack(side="left", padx=2)
+
+        ttk.Separator(panel).pack(fill="x", pady=6)
+
+        # fly one drone (works even if the rest of the swarm has no pose yet)
+        ttk.Label(panel, text="Fly one drone", font=("", 11, "bold")).pack(anchor="w")
+        ttk.Label(panel, wraplength=210, foreground="#555",
+                  text="Pick a drone, toggle target mode, click its target "
+                       "on the map.").pack(anchor="w")
+        srow = ttk.Frame(panel)
+        srow.pack(fill="x", pady=4)
+        ttk.Label(srow, text="drone").pack(side="left")
+        self.single_drone_var = tk.StringVar(value="1")
+        ttk.Combobox(srow, state="readonly", width=4,
+                     textvariable=self.single_drone_var,
+                     values=[str(i + 1) for i in range(self.node.n)]
+                     ).pack(side="left", padx=4)
+        self.single_target_btn = ttk.Button(
+            srow, text="target mode: off", width=14,
+            command=self._toggle_single_target)
+        self.single_target_btn.pack(side="left", padx=2)
+        self.fly_single_btn = ttk.Button(
+            panel, text="fly selected drone", state="disabled",
+            command=self._fly_single)
+        self.fly_single_btn.pack(fill="x", pady=(2, 0))
 
         ttk.Separator(panel).pack(fill="x", pady=6)
 
@@ -369,6 +397,12 @@ class App(tk.Tk):
                                          outline="#d40", width=2, tags="dyn")
             self.canvas.create_text(px, py - 14, text=str(i + 1),
                                     fill="#d40", tags="dyn")
+        # single-drone target click
+        if self.single_target_point is not None:
+            px, py = self._w2p(*self.single_target_point)
+            self.canvas.create_oval(px - 8, py - 8, px + 8, py + 8,
+                                    outline="#0a7", width=2, dash=(2, 2),
+                                    tags="dyn")
         # live drones (greyed out when inactive)
         for i, pose in enumerate(self.node.poses):
             if pose is None:
@@ -420,6 +454,9 @@ class App(tk.Tk):
 
     def _toggle_design(self):
         self.design_mode = not self.design_mode
+        if self.design_mode:
+            self.single_target_mode = False
+            self.single_target_btn.config(text="target mode: off")
         self.design_btn.config(
             text="design: ON" if self.design_mode else "design: off")
 
@@ -428,13 +465,29 @@ class App(tk.Tk):
         self.fly_design_btn.config(state="disabled")
         self.save_design_btn.config(state="disabled")
 
+    def _toggle_single_target(self):
+        self.single_target_mode = not self.single_target_mode
+        if self.single_target_mode:
+            self.design_mode = False
+            self.design_btn.config(text="design: off")
+        self.single_target_btn.config(
+            text="target mode: ON" if self.single_target_mode else "target mode: off")
+
     def _on_map_click(self, ev):
-        if not self.design_mode or len(self.design_points) >= self.node.n:
+        if not (self.design_mode or self.single_target_mode):
+            return
+        if self.design_mode and len(self.design_points) >= self.node.n:
             return
         x, y = self._p2w(ev.x, ev.y)
         min_x, max_x, min_y, max_y = self.node.arena_bounds
         if not (min_x <= x <= max_x and min_y <= y <= max_y):
             self.status.config(text="click inside the arena rectangle")
+            return
+        if self.single_target_mode:
+            self.single_target_point = (x, y)
+            self.fly_single_btn.config(state="normal")
+            self.status.config(
+                text=f"target set for drone {self.single_drone_var.get()}")
             return
         self.design_points.append((x, y))
         if len(self.design_points) == self.node.n:
@@ -456,6 +509,17 @@ class App(tk.Tk):
         self.targets = transform_offsets(offsets, center, alt)
         self._set_busy(True, "flying designed formation")
         self.node.send("designed", 0.0, alt, 0.0, center=center, offsets=offsets)
+
+    def _fly_single(self):
+        if self.busy or self.single_target_point is None:
+            return
+        drone_id = int(self.single_drone_var.get())
+        alt, yaw = self.altitude.get(), self._yaw_rad()
+        x, y = self.single_target_point
+        self.targets = [(x, y, alt)]
+        self._set_busy(True, f"flying drone {drone_id} to waypoint")
+        self.node.send(CUSTOM, 0.0, alt, yaw, center=(x, y),
+                       offsets=[(0.0, 0.0, 0.0)], drone_ids=[drone_id])
 
     def _save_designed(self):
         if len(self.design_points) != self.node.n:
@@ -480,6 +544,9 @@ class App(tk.Tk):
         for b in self.formation_btns:
             b.config(state=state)
         self.preset_fly_btn.config(state=state)
+        self.fly_single_btn.config(
+            state="disabled" if busy or self.single_target_point is None
+            else "normal")
         self.cancel_btn.config(state="normal" if busy else "disabled")
         if text:
             self.status.config(text=text)

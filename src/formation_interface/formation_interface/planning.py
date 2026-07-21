@@ -193,8 +193,14 @@ def plan_paths(
     arena: Arena,
     cell_size: float = 0.1,
     safety_radius: float = 0.4,
+    static_obstacles: Sequence[XY] = (),
 ) -> Tuple[List[List[XY]], List[int]]:
-   
+    """``static_obstacles`` are other drones that exist but aren't part of
+    this planning call (e.g. holding a target from an earlier goal). They're
+    inflated as hard obstacles for every drone planned here, in both the
+    normal and the path-crossing-allowed fallback attempt - unlike another
+    *planned* drone's path, we can't ask a drone outside this goal to move.
+    """
     if len(starts) != len(goals):
         raise ValueError("starts and goals must have the same length")
     n = len(starts)
@@ -205,12 +211,14 @@ def plan_paths(
 
     grid = _Grid(arena, cell_size)
     starts = [arena.clamp(x, y) for (x, y) in starts]
+    static_obstacles = list(static_obstacles)
 
     paths: List[List[XY]] = []
     crossings: List[int] = []
     for k in range(n):
         endpoint_obs = [starts[m] for m in range(n) if m != k]
         endpoint_obs += [goals[m] for m in range(k)]
+        endpoint_obs += static_obstacles
         path_obs = [pt for m in range(k) for pt in _densify(paths[m], cell_size)]
 
         try:

@@ -39,6 +39,18 @@ def test_path_avoids_parked_drone():
     assert paths[1][-1] == (4.0, 0.0)
 
 
+def test_avoids_static_obstacle():
+    # only drone 2 is being planned for; drone 1's parked position is passed
+    # as a static obstacle (e.g. it's holding a target from an earlier,
+    # separate goal) rather than as a second start/goal pair.
+    paths, _ = plan_paths([(-4.0, 0.0)], [(4.0, 0.0)], ARENA,
+                          static_obstacles=[(0.0, 0.0)])
+    clearance = _min_dist_to(paths[0], (0.0, 0.0))
+    assert clearance > 0.28, f"clearance {clearance:.3f} m"
+    assert paths[0][0] == (-4.0, 0.0)
+    assert paths[0][-1] == (4.0, 0.0)
+
+
 def test_all_waypoints_inside_arena():
     starts = [(-4.5, -4.5), (4.5, -4.5), (0.0, 4.5)]
     goals = [(4.5, 4.5), (-4.5, 4.5), (0.0, -4.5)]

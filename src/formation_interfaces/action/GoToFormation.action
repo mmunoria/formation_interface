@@ -8,8 +8,17 @@ float32 yaw                  # heading the whole formation faces [rad]
 
 # When formation == "custom": one offset per drone, relative to `center`, in the
 # formation-local frame (rotated by yaw). z is an offset added to `altitude`,
-# so custom formations may be 3-D. Length must equal the number of drones.
+# so custom formations may be 3-D. Length must equal the number of drones
+# being commanded (see `drone_ids` below).
 geometry_msgs/Point[] custom_offsets
+
+# 1-indexed subset of drones to command (matches system_ids/pose_topics
+# order in config/drones.yaml). Empty (default) = every configured drone,
+# i.e. today's whole-swarm behaviour. A non-empty list lets one or more
+# drones fly (with a path planned around every other known drone's current
+# position, even if that drone was never targeted by this goal) without
+# requiring a pose from drones outside this list.
+int32[] drone_ids
 ---
 # =========================== RESULT ===========================
 bool success

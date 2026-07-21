@@ -177,25 +177,46 @@ class FormationNode(Node):
                 self._armed[i] = True
                 self.get_logger().info(f"[{self.namespaces[i]}] offboard + armed")
 
-    def _errors(self):
+    def _errors(self, indices=None):
+        if indices is None:
+            indices = range(self.n)
         errs = []
-        for i in range(self.n):
+        for i in indices:
             if self.poses[i] is None or self.targets[i] is None:
                 errs.append(float("inf"))
             else:
                 errs.append(_dist(self.poses[i], self.targets[i]))
         return errs
 
-    def _assign(self, targets):
-        """Assign each drone the nearest still-free target (greedy, no crossings).
+    def _target_indices(self, req):
+        """0-indexed drones this goal commands.
 
-        Falls back to index order if we don't yet have a pose for every drone.
+        Every configured drone when ``req.drone_ids`` is empty (today's
+        whole-swarm behaviour); otherwise the validated subset it names
+        (1-indexed, matching system_ids/pose_topics order) - this is what
+        lets a goal fly just one drone without requiring a pose from every
+        other configured one.
         """
-        if any(p is None for p in self.poses):
-            return list(targets[: self.n])
-        result = [None] * self.n
+        if not req.drone_ids:
+            return list(range(self.n))
+        ids = list(req.drone_ids)
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"drone_ids has duplicates: {ids}")
+        bad = [d for d in ids if d < 1 or d > self.n]
+        if bad:
+            raise ValueError(f"drone_ids out of range (1..{self.n}): {bad}")
+        return [d - 1 for d in ids]
+
+    def _assign(self, targets, indices):
+        """Assign each drone in ``indices`` the nearest still-free target
+        (greedy, no crossings). Falls back to index order if we don't yet
+        have a pose for every drone in ``indices``.
+        """
+        if any(self.poses[i] is None for i in indices):
+            return list(targets[: len(indices)])
+        result = [None] * len(indices)
         used = set()
-        for i in range(self.n):
+        for k, i in enumerate(indices):
             best, best_d = None, None
             for t in range(len(targets)):
                 if t in used:
@@ -204,7 +225,7 @@ class FormationNode(Node):
                 if best_d is None or d < best_d:
                     best, best_d = t, d
             used.add(best)
-            result[i] = targets[best]
+            result[k] = targets[best]
         return result
 
     # ------------------------------ path following -----------------------------
@@ -269,12 +290,21 @@ class FormationNode(Node):
         altitude = req.altitude if req.altitude > 0 else 1.5
         center = (req.center.x, req.center.y)
 
+        try:
+            idx = self._target_indices(req)
+        except ValueError as exc:
+            goal_handle.abort()
+            result.success = False
+            result.message = str(exc)
+            return result
+        count = len(idx)
+
         if formation == CUSTOM:
-            if len(req.custom_offsets) != self.n:
+            if len(req.custom_offsets) != count:
                 goal_handle.abort()
                 result.success = False
                 result.message = (
-                    f"custom formation needs exactly {self.n} offsets, "
+                    f"custom formation needs exactly {count} offsets, "
                     f"got {len(req.custom_offsets)}")
                 return result
             raw = transform_offsets(
@@ -282,7 +312,7 @@ class FormationNode(Node):
                 center, altitude, req.yaw)
         elif formation in FORMATIONS:
             raw = compute_targets(
-                formation, self.n, spacing, center, altitude, req.yaw)
+                formation, count, spacing, center, altitude, req.yaw)
         else:
             goal_handle.abort()
             result.success = False
@@ -290,10 +320,10 @@ class FormationNode(Node):
                 f"unknown formation '{req.formation}'; "
                 f"options: {list(FORMATIONS)} or '{CUSTOM}' with offsets")
             return result
-        targets = self._assign(raw)
+        targets = self._assign(raw, idx)
 
         # ---- arena bounds check (R3) ----
-        outside = [i + 1 for i, t in enumerate(targets)
+        outside = [idx[k] + 1 for k, t in enumerate(targets)
                    if not self.arena.contains(t[0], t[1])]
         if outside:
             goal_handle.abort()
@@ -304,7 +334,7 @@ class FormationNode(Node):
             return result
 
         # ---- path planning, drones as mutual obstacles (R4) ----
-        missing = [i + 1 for i in range(self.n) if self.poses[i] is None]
+        missing = [i + 1 for i in idx if self.poses[i] is None]
         if missing:
             goal_handle.abort()
             result.success = False
@@ -313,11 +343,18 @@ class FormationNode(Node):
                 f"check the OptiTrack topics")
             return result
 
+        # Drones not in this goal but with a known pose (e.g. holding a
+        # target from an earlier goal) are static obstacles, not planned for.
+        static_obstacles = [
+            (self.poses[i][0], self.poses[i][1])
+            for i in range(self.n) if i not in idx and self.poses[i] is not None]
+
         try:
             paths, crossings = plan_paths(
-                [(p[0], p[1]) for p in self.poses],
+                [(self.poses[i][0], self.poses[i][1]) for i in idx],
                 [(t[0], t[1]) for t in targets],
-                self.arena, self.plan_cell, self.safety_radius)
+                self.arena, self.plan_cell, self.safety_radius,
+                static_obstacles=static_obstacles)
         except PlanningError as exc:
             goal_handle.abort()
             result.success = False
@@ -325,19 +362,20 @@ class FormationNode(Node):
             return result
         if crossings:
             self.get_logger().warn(
-                f"drone(s) {crossings} cross other planned paths "
-                f"(unavoidable for this formation)")
+                f"drone(s) {[idx[c - 1] + 1 for c in crossings]} cross "
+                f"other planned paths (unavoidable for this formation)")
 
-        for i in range(self.n):
-            self._paths[i] = paths[i]
-            self._wp[i] = 1 if len(paths[i]) > 1 else 0
-            self._publish_path(i, paths[i], altitude)
-            self.targets[i] = targets[i]
-            wx, wy = paths[i][self._wp[i]]
+        for k, i in enumerate(idx):
+            self._paths[i] = paths[k]
+            self._wp[i] = 1 if len(paths[k]) > 1 else 0
+            self._publish_path(i, paths[k], altitude)
+            self.targets[i] = targets[k]
+            wx, wy = paths[k][self._wp[i]]
             self.commanders[i].set_target_enu(wx, wy, altitude, yaw=req.yaw)
 
         self.get_logger().info(
-            f"forming '{formation}': spacing={spacing} m, alt={altitude} m, "
+            f"forming '{formation}' for drone(s) {[i + 1 for i in idx]}: "
+            f"spacing={spacing} m, alt={altitude} m, "
             f"paths planned ({sum(len(p) for p in paths)} waypoints total)")
 
         rate = self.create_rate(5.0)          # feedback / check rate
@@ -353,25 +391,26 @@ class FormationNode(Node):
 
             self._advance_waypoints(altitude, req.yaw)
 
-            errs = self._errors()
+            errs = self._errors(idx)
             finite = [e for e in errs if e != float("inf")]
             in_pos = sum(1 for e in errs if e <= self.tolerance)
             max_err = max(finite) if finite else float("inf")
 
             fb = GoToFormation.Feedback()
-            fb.drones_total = self.n
+            fb.drones_total = count
             fb.drones_in_position = in_pos
-            fb.progress = in_pos / self.n if self.n else 0.0
+            fb.progress = in_pos / count if count else 0.0
             fb.max_error = float(max_err) if max_err != float("inf") else -1.0
             goal_handle.publish_feedback(fb)
 
-            if in_pos == self.n:
+            if in_pos == count:
                 settle += 1
                 if settle >= self.settle_cycles:
                     goal_handle.succeed()
                     result.success = True
                     result.message = (
-                        f"'{formation}' achieved (worst error {max_err:.2f} m)")
+                        f"'{formation}' achieved for drone(s) "
+                        f"{[i + 1 for i in idx]} (worst error {max_err:.2f} m)")
                     return result
             else:
                 settle = 0
@@ -382,7 +421,7 @@ class FormationNode(Node):
                 result.success = False
                 result.message = (
                     f"timeout after {self.goal_timeout:.0f} s "
-                    f"({in_pos}/{self.n} in position)")
+                    f"({in_pos}/{count} in position)")
                 return result
 
             rate.sleep()

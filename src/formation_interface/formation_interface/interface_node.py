@@ -15,6 +15,7 @@ text menu.
 """
 
 import json
+import math
 import threading
 from pathlib import Path
 
@@ -40,15 +41,19 @@ class InterfaceNode(Node):
         self._goal_handle = None
 
     # ------------------------------ public API ---------------------------------
-    def send_formation(self, formation, spacing, altitude, yaw=0.0, offsets=None):
+    def send_formation(self, formation, spacing, altitude, yaw=0.0, offsets=None,
+                        center=(0.0, 0.0), drone_ids=None):
         """Send one formation goal and block until it finishes (result printed).
 
         Args:
-            formation: a built-in name, or anything when ``offsets`` is given
-                       (the goal is then sent as a custom formation).
-            offsets:   optional list of per-drone (x, y[, z]) offsets from the
-                       formation centre - this is how arbitrary formations are
-                       commanded.
+            formation:  a built-in name, or anything when ``offsets`` is given
+                        (the goal is then sent as a custom formation).
+            offsets:    optional list of per-drone (x, y[, z]) offsets from the
+                        formation centre - this is how arbitrary formations are
+                        commanded.
+            drone_ids:  optional 1-indexed subset of drones to command (matches
+                        drones.yaml order). Omitted/empty = every configured
+                        drone (the usual whole-swarm goal).
         """
         if not self._client.wait_for_server(timeout_sec=5.0):
             print("  !! formation_node action server not available. Is it running?")
@@ -57,8 +62,10 @@ class InterfaceNode(Node):
         goal = GoToFormation.Goal()
         goal.spacing = float(spacing)
         goal.altitude = float(altitude)
-        goal.center = Point(x=0.0, y=0.0, z=0.0)
+        goal.center = Point(x=float(center[0]), y=float(center[1]), z=0.0)
         goal.yaw = float(yaw)
+        if drone_ids:
+            goal.drone_ids = [int(d) for d in drone_ids]
 
         if offsets is not None:
             goal.formation = CUSTOM
@@ -178,6 +185,38 @@ def create_custom(presets):
     return name, offsets
 
 
+def create_waypoint():
+    """Interactively define a single-drone waypoint goal.
+
+    Unlike ``create_custom`` (one offset per *every* drone), this flies just
+    one drone - useful when the rest of the swarm isn't hooked up yet, or you
+    just want to reposition one drone without disturbing the others.
+
+    Returns ``(drone_id, x, y, z, yaw_rad)`` or ``None`` if aborted.
+    """
+    print("\n--- Fly a single drone ---")
+    raw = input("  drone id: ").strip()
+    if not raw:
+        print("  (aborted)")
+        return None
+    try:
+        drone_id = int(raw)
+    except ValueError:
+        print("  (not a number)")
+        return None
+    raw = input("  target 'x y z' (metres, z is altitude): ").strip()
+    if not raw:
+        print("  (aborted)")
+        return None
+    try:
+        x, y, z = _parse_offset(raw)
+    except ValueError:
+        print("    (couldn't parse - use 'x y' or 'x y z')")
+        return None
+    yaw_deg = _ask_float("  yaw (deg)", 0.0)
+    return drone_id, x, y, z, math.radians(yaw_deg)
+
+
 def run_menu(node):
     presets = load_presets()
     while rclpy.ok():
@@ -188,6 +227,7 @@ def run_menu(node):
         for j, name in enumerate(preset_names, len(MENU) + 1):
             print(f"  {j}) {name} (saved, {len(presets[name])} drones)")
         print("  c) create a new formation")
+        print("  w) fly a single drone to a waypoint")
         print("  0) quit")
 
         choice = input("select formation: ").strip().lower()
@@ -201,6 +241,15 @@ def run_menu(node):
             name, offsets = created
             altitude = _ask_float("  altitude (m)", 1.5)
             node.send_formation(name, 0.0, altitude, offsets=offsets)
+            continue
+
+        if choice in ("w", "waypoint"):
+            created = create_waypoint()
+            if created is None:
+                continue
+            drone_id, x, y, z, yaw = created
+            node.send_formation(CUSTOM, 0.0, z, yaw=yaw, offsets=[(0.0, 0.0, 0.0)],
+                                center=(x, y), drone_ids=[drone_id])
             continue
 
         if not choice.isdigit():
