@@ -8,7 +8,7 @@ from formation_interfaces.msg import DroneActive
 class DroneActivePublisherNode(Node):
     def __init__(self):
         super().__init__("drone_active_publisher")
-        self.declare_parameter("drone_id", 0)
+        self.declare_parameter("drone_id", 1)
         self.declare_parameter("active_rate", 2.0)   # Hz, heartbeat publish rate
 
         g = self.get_parameter
