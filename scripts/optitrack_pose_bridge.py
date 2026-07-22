@@ -1,9 +1,8 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped
-
-from formation_interfaces.msg import DronePose
 
 
 class OptitrackPoseBridgeNode(Node):
@@ -15,18 +14,16 @@ class OptitrackPoseBridgeNode(Node):
         g = self.get_parameter
         self.drone_id = int(g("drone_id").value)
         source_topic = str(g("source_topic").value)
+        pose_topic = f"/vrpn_mocap/drone{self.drone_id}/pose"
 
-        self._pub = self.create_publisher(DronePose, "/optitrack/drone_pose", 20)
+        self._pub = self.create_publisher(PoseStamped, pose_topic, 20)
         self.create_subscription(PoseStamped, source_topic, self._on_pose, 20)
 
         self.get_logger().info(
-            f"optitrack_pose_bridge: {source_topic} -> drone_id {self.drone_id}")
+            f"optitrack_pose_bridge: {source_topic} -> {pose_topic}")
 
     def _on_pose(self, msg):
-        out = DronePose()
-        out.drone_id = self.drone_id
-        out.pose = msg
-        self._pub.publish(out)
+        self._pub.publish(msg)
 
 
 def main(args=None):

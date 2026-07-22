@@ -1,8 +1,7 @@
-
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-
-from formation_interfaces.msg import DroneActive
+from std_msgs.msg import Bool
 
 
 class DroneActivePublisherNode(Node):
@@ -15,17 +14,15 @@ class DroneActivePublisherNode(Node):
         self.drone_id = int(g("drone_id").value)
         rate = float(g("active_rate").value)
 
-        self._pub = self.create_publisher(DroneActive, "/optitrack/drone_active", 20)
+        self._pub = self.create_publisher(Bool, f"/drone{self.drone_id}/active", 20)
         self.create_timer(1.0 / rate, self._publish)
 
         self.get_logger().info(
-            f"drone_active_publisher: drone {self.drone_id} active heartbeat @ {rate} Hz")
+            f"drone_active_publisher: drone {self.drone_id} active heartbeat @ {rate} Hz "
+            f"on /drone{self.drone_id}/active")
 
     def _publish(self):
-        msg = DroneActive()
-        msg.drone_id = self.drone_id
-        msg.active = True
-        self._pub.publish(msg)
+        self._pub.publish(Bool(data=True))
 
 
 def main(args=None):

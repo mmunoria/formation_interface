@@ -78,7 +78,7 @@ def _parse_drone_ids(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--num-drones", type=int, default=5,
+    parser.add_argument("--num-drones", type=int, default=1,
                          help="number of drones, ids 1..N (default: 5, "
                               "matching config/drones.yaml)")
     parser.add_argument("--drone-ids", type=str, default=None,
