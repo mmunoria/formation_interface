@@ -116,17 +116,28 @@ class FormationNode(Node):
         self._active = False               # a goal is currently executing
         self._paths = [None] * self.n      # planned [(x, y), ...] per drone
         self._wp = [0] * self.n            # index of the waypoint being flown to
+        self._current_wp = [None] * self.n  # (x, y, z) ENU waypoint being flown *now*
 
         self.commanders = []
         self._path_pubs = []
+        self._current_target_pubs = []
         for i, ns in enumerate(self.namespaces):
             sysid = self.system_ids[i] if i < len(self.system_ids) else i + 2
             topic = self.pose_topics[i] if i < len(self.pose_topics) else f"/{ns}/pose"
             self.commanders.append(
                 make_commander(self.backend, self, ns, sysid, topic, i + 1))
             self._make_pose_sub(i, topic)
+            # Full planned path, published once (latched) per goal - for
+            # visualization (gui_node) only, not a live setpoint feed.
             self._path_pubs.append(
                 self.create_publisher(Path, f"/drone{i + 1}/path", LATCHED_QOS))
+            # The single waypoint currently being flown to, republished every
+            # control tick - for onboard/companion-computer consumers (e.g.
+            # from_drone/mocap_update.py) that need a live target, not the
+            # whole plan.
+            self._current_target_pubs.append(
+                self.create_publisher(
+                    PoseStamped, f"/drone{i + 1}/current_target", 10))
 
         # ------------------------------ ros interfaces --------------------------
         self.create_timer(
@@ -169,6 +180,7 @@ class FormationNode(Node):
         """
         for i, cmd in enumerate(self.commanders):
             cmd.publish_heartbeat()
+            self._publish_current_target(i)
             if self.targets[i] is None:
                 continue
             if self.auto_arm and not self._armed[i] and cmd.ready_to_arm():
@@ -176,6 +188,25 @@ class FormationNode(Node):
                 cmd.arm()
                 self._armed[i] = True
                 self.get_logger().info(f"[{self.namespaces[i]}] offboard + armed")
+
+    def _publish_current_target(self, i):
+        """Republish drone i's current waypoint every control tick.
+
+        Unlike ``/drone{i+1}/path`` (the whole plan, published once), this is
+        a live feed of just the single PoseStamped a consumer should track
+        right now - only sent while a waypoint is actually set.
+        """
+        wp = self._current_wp[i]
+        if wp is None:
+            return
+        msg = PoseStamped()
+        msg.header.frame_id = "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.position.x = float(wp[0])
+        msg.pose.position.y = float(wp[1])
+        msg.pose.position.z = float(wp[2])
+        msg.pose.orientation.w = 1.0
+        self._current_target_pubs[i].publish(msg)
 
     def _errors(self, indices=None):
         if indices is None:
@@ -248,6 +279,7 @@ class FormationNode(Node):
                 self._wp[i] += 1
                 nx, ny = path[self._wp[i]]
                 self.commanders[i].set_target_enu(nx, ny, altitude, yaw=yaw)
+                self._current_wp[i] = (nx, ny, altitude)
 
     def _publish_path(self, i, path, altitude):
         """Publish drone i's planned path as nav_msgs/Path (latched)."""
@@ -372,6 +404,7 @@ class FormationNode(Node):
             self.targets[i] = targets[k]
             wx, wy = paths[k][self._wp[i]]
             self.commanders[i].set_target_enu(wx, wy, altitude, yaw=req.yaw)
+            self._current_wp[i] = (wx, wy, altitude)
 
         self.get_logger().info(
             f"forming '{formation}' for drone(s) {[i + 1 for i in idx]}: "
