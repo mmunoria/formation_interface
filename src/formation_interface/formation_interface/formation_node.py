@@ -1,17 +1,3 @@
-"""Formation node - runs on/near the drones.
-
-Acts as a ``GoToFormation`` action server:
-
-  1. On a goal, compute per-drone target positions from the requested formation.
-  2. Assign targets to drones (nearest-first) to keep travel short.
-  3. Stream setpoints to each drone through its commander backend.
-  4. Watch the OptiTrack poses and publish feedback until every drone is within
-     ``position_tolerance`` (held for ``settle_cycles``), or timeout / cancel.
-
-A free-running control timer publishes the offboard heartbeats; PX4 needs those
-streaming continuously, independent of the action lifecycle.
-"""
-
 import math
 
 import rclpy
@@ -59,7 +45,7 @@ class FormationNode(Node):
     def __init__(self):
         super().__init__("formation_node")
 
-        # ------------------------------ parameters ------------------------------
+       
         self.declare_parameter(
             "drone_namespaces", ["px4_1", "px4_2", "px4_3", "px4_4", "px4_5"])
         self.declare_parameter("system_ids", [2, 3, 4, 5, 6])
@@ -109,7 +95,7 @@ class FormationNode(Node):
         self.n = len(self.namespaces)
         self._cb = ReentrantCallbackGroup()
 
-        # ------------------------------ per-drone state -------------------------
+        
         self.poses = [None] * self.n       # latest (x, y, z) ENU per drone
         self.targets = [None] * self.n     # active (x, y, z) ENU target or None
         self._armed = [False] * self.n
@@ -172,12 +158,7 @@ class FormationNode(Node):
 
     # ------------------------------ control loop -------------------------------
     def _control_loop(self):
-        """Stream setpoints; handle the (optional) auto-arm sequence per drone.
-
-        Runs for every commander even with no goal: the PX4 backend self-guards
-        (no setpoints until a target is set) while the sim backend publishes its
-        pose + active heartbeat from startup, so the GUI sees drones immediately.
-        """
+        
         for i, cmd in enumerate(self.commanders):
             cmd.publish_heartbeat()
             self._publish_current_target(i)
@@ -189,13 +170,9 @@ class FormationNode(Node):
                 self._armed[i] = True
                 self.get_logger().info(f"[{self.namespaces[i]}] offboard + armed")
 
+    """ some new stuff don not touch until test usabata"""
     def _publish_current_target(self, i):
-        """Republish drone i's current waypoint every control tick.
-
-        Unlike ``/drone{i+1}/path`` (the whole plan, published once), this is
-        a live feed of just the single PoseStamped a consumer should track
-        right now - only sent while a waypoint is actually set.
-        """
+        
         wp = self._current_wp[i]
         if wp is None:
             return
@@ -220,14 +197,7 @@ class FormationNode(Node):
         return errs
 
     def _target_indices(self, req):
-        """0-indexed drones this goal commands.
-
-        Every configured drone when ``req.drone_ids`` is empty (today's
-        whole-swarm behaviour); otherwise the validated subset it names
-        (1-indexed, matching system_ids/pose_topics order) - this is what
-        lets a goal fly just one drone without requiring a pose from every
-        other configured one.
-        """
+        
         if not req.drone_ids:
             return list(range(self.n))
         ids = list(req.drone_ids)
@@ -239,10 +209,7 @@ class FormationNode(Node):
         return [d - 1 for d in ids]
 
     def _assign(self, targets, indices):
-        """Assign each drone in ``indices`` the nearest still-free target
-        (greedy, no crossings). Falls back to index order if we don't yet
-        have a pose for every drone in ``indices``.
-        """
+        
         if any(self.poses[i] is None for i in indices):
             return list(targets[: len(indices)])
         result = [None] * len(indices)
@@ -261,12 +228,7 @@ class FormationNode(Node):
 
     # ------------------------------ path following -----------------------------
     def _advance_waypoints(self, altitude, yaw):
-        """Feed each drone the next waypoint once it reaches the current one.
-
-        The last waypoint of every path is the formation target itself, so the
-        existing convergence check (`_errors` against `self.targets`) is
-        untouched.
-        """
+    
         for i in range(self.n):
             path = self._paths[i]
             if path is None or self._wp[i] >= len(path) - 1:
@@ -282,7 +244,7 @@ class FormationNode(Node):
                 self._current_wp[i] = (nx, ny, altitude)
 
     def _publish_path(self, i, path, altitude):
-        """Publish drone i's planned path as nav_msgs/Path (latched)."""
+        
         msg = Path()
         msg.header.frame_id = "map"
         msg.header.stamp = self.get_clock().now().to_msg()
