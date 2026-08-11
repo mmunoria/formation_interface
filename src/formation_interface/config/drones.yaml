@@ -14,6 +14,12 @@
     # VehicleCommand for arming / mode changes.
     system_ids: [2, 3, 4, 5, 6]
 
+    # ROS_DOMAIN_ID each drone's onboard side runs on (index-aligned with
+    # drone_namespaces, one per vehicle). Only command_node.py reads this -
+    # every other node in this file runs on the operator PC's single
+    # ROS_DOMAIN_ID, same as always. >>> CHANGE THESE to your deployment. <<<
+    drone_domains: [1, 2, 3, 4, 5]
+
     # OptiTrack -> ROS2 pose topics (one rigid body per drone).
     # >>> CHANGE THESE to your actual bridge topic names. <<<
     pose_topics:
