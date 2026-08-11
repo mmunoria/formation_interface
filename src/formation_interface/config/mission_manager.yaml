@@ -1,0 +1,23 @@
+# Configuration for the mission manager subsystem (mission_node + mission_gui).
+#
+# The wildcard key applies to every node that loads this file (mission_node
+# AND mission_gui); each node only picks up the parameters it declares.
+/**:
+  ros__parameters:
+    # >>> CHANGE to an absolute path, or run `ros2 launch` from the repo
+    # root, since this is resolved relative to the current working
+    # directory when it isn't absolute. <<<
+    missions_root: "missions"
+
+    # Overridden to the installed absolute path by mission.launch.py /
+    # mission_gui.launch.py - the values here only apply if you run
+    # `ros2 run formation_interface mission_node` directly, without a
+    # launch file, from a source checkout.
+    drone_profiles_dir: "config/drone_profiles"
+    flight_profiles_dir: "flight_profiles"
+
+    # mission_node only.
+    default_backend: "mock_ssh"     # local | ssh | mock_ssh - safe default, no hardware
+    telemetry_rate: 5.0             # Hz
+    telemetry_stale_timeout: 3.0    # s (reserved for future staleness use)
+    goal_timeout: 60.0              # s - time allowed to reach 'streaming' before a Start aborts

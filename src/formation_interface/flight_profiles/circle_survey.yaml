@@ -1,0 +1,16 @@
+name: circle_survey
+description: >
+  Fly a level circle around the drone's home position - a basic survey
+  pattern. Requires a drone with a camera.
+version: 1
+state: OFFBOARD
+control_scheme: position
+params:
+  position_tolerance: 0.2
+  goal_timeout: 120.0
+trajectory:
+  type: circle
+  radius: 1.5
+  period: 20.0
+  offset: [0.0, 0.0, 1.5]
+required_capabilities: ["camera"]

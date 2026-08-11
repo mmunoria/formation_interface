@@ -5,3 +5,7 @@ log/
 src/.vscode/
 __pycache__/
 *.pyc
+
+# Mission manager runtime data: mission.yaml/README.md are kept (small,
+# human-authored); per-run params/logs are not.
+missions/*/runs/

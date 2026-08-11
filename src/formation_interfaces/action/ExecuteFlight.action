@@ -1,0 +1,23 @@
+# ============================ GOAL ============================
+# Command ONE drone (identified by its drone_profiles/<name>.yaml `name`,
+# not an index) to execute a flight profile as part of a mission. Unlike
+# GoToFormation (one goal for the whole swarm), mission_node accepts one
+# concurrent goal PER drone_name, so drones start/interrupt independently.
+string mission_name          # must name an existing missions/<mission_name>/
+string drone_name            # matches a config/drone_profiles/<name>.yaml `name:` field
+string flight_profile        # optional override; "" = resolve from mission.yaml's assignment
+string backend                # "" (use drone profile default) | "local" | "ssh" | "mock_ssh"
+---
+# =========================== RESULT ===========================
+bool success
+string message
+string phase                 # final phase reached: "held" | "landed" | "aborted" | "error"
+---
+# ========================== FEEDBACK =========================
+string phase                 # deploying|generating_launch|copying|starting|streaming|holding|error
+uint8 nav_state               # mirrors px4_msgs/VehicleStatus.nav_state, 255 if unknown
+uint8 arming_state             # mirrors px4_msgs/VehicleStatus.arming_state, 0 if unknown
+bool pre_flight_checks_pass
+bool gcs_connection_lost
+float32 battery_remaining     # 0..1, -1 if unknown
+float32 tracking_error        # m, -1 if unknown

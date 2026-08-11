@@ -1,0 +1,11 @@
+# Deliberate operation, separate from cancelling an ExecuteFlight goal
+# (which only produces a gentle hold - see ExecuteFlight.action). Terminate
+# optionally lands the drone(s) first, then always pulls any local logs
+# back from the drone via the active deploy backend.
+string mission_name
+string drone_name        # "" = every drone currently holding/active under this mission
+bool land_first           # true = command AUTO_LAND before pulling logs
+---
+bool success
+string message
+string[] log_paths       # local paths logs were copied to, one per drone processed

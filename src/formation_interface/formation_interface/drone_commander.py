@@ -11,16 +11,23 @@ from rclpy.qos import (
 )
 
 
-def make_commander(backend, node, namespace, system_id, pose_topic, drone_id):
+def make_commander(backend, node, namespace, system_id, pose_topic, drone_id,
+                    control_scheme="position"):
     """Factory: return the commander matching ``backend`` ('px4' or 'sim').
 
     ``drone_id`` is the display ID (index + 1) used for per-drone topics like
     ``/drone<ID>/active``. Real drones publish their active flag onboard, so
     only the sim backend uses it here.
+
+    ``control_scheme`` ('position' | 'velocity' | 'trajectory') selects which
+    PX4 offboard setpoint type ``PX4Commander`` streams (see its
+    ``set_target_*`` methods). Ignored by the sim backend - ``MockCommander``
+    only ever integrates a point mass toward a position target. Defaults to
+    'position' so every existing call site (formation_node.py) is unaffected.
     """
     if backend == "sim":
         return MockCommander(node, namespace, pose_topic, drone_id)
-    return PX4Commander(node, namespace, system_id)
+    return PX4Commander(node, namespace, system_id, control_scheme=control_scheme)
 
 
 def _px4_qos() -> QoSProfile:
@@ -34,9 +41,18 @@ def _px4_qos() -> QoSProfile:
 
 
 class PX4Commander:
-    """Streams PX4 offboard position setpoints to one vehicle instance."""
+    """Streams PX4 offboard setpoints to one vehicle instance.
 
-    def __init__(self, node, namespace, system_id):
+    ``control_scheme`` selects which ``TrajectorySetpoint`` fields are
+    commanded (and which ``OffboardControlMode`` booleans are raised to
+    match): 'position' (default, the only mode formation_node.py uses) sets
+    only position via :meth:`set_target_enu`; 'velocity' sets only velocity
+    via :meth:`set_target_velocity_enu`; 'trajectory' sets position plus
+    optional velocity/acceleration feedforward via
+    :meth:`set_target_trajectory_enu`.
+    """
+
+    def __init__(self, node, namespace, system_id, control_scheme="position"):
         # Lazy import so 'sim' backend / tests don't require px4_msgs.
         from px4_msgs.msg import (
             OffboardControlMode,
@@ -51,6 +67,7 @@ class PX4Commander:
         self.node = node
         self.ns = namespace
         self.system_id = int(system_id)
+        self.control_scheme = control_scheme
 
         qos = _px4_qos()
         base = f"/{namespace}/fmu/in" if namespace else "/fmu/in"
@@ -62,36 +79,62 @@ class PX4Commander:
             VehicleCommand, f"{base}/vehicle_command", qos)
 
         self._target_ned = None
+        self._velocity_ned = None
+        self._accel_ned = None
         self._yaw_ned = 0.0
+        self._yawspeed_ned = 0.0
         self._ticks = 0
         self.armed = False
 
     def set_target_enu(self, x, y, z, yaw=0.0):
-        # World ENU (x=east, y=north, z=up) -> PX4 NED (x=north, y=east, z=down).
+        """Position control scheme (also the position component of
+        'trajectory'). World ENU (x=east, y=north, z=up) -> PX4 NED
+        (x=north, y=east, z=down)."""
         self._target_ned = (float(y), float(x), float(-z))
         # ENU yaw (CCW from east) -> NED yaw (CW from north).
         self._yaw_ned = float(math.pi / 2.0 - yaw)
 
+    def set_target_velocity_enu(self, vx, vy, vz, yaw_rate=0.0):
+        """Velocity control scheme: velocity in world ENU m/s, converted to
+        PX4 NED the same way :meth:`set_target_enu` converts position."""
+        self._velocity_ned = (float(vy), float(vx), float(-vz))
+        self._yawspeed_ned = float(-yaw_rate)
+
+    def set_target_trajectory_enu(self, pos, vel=None, accel=None, yaw=0.0):
+        """Trajectory control scheme: required position plus optional
+        velocity/acceleration feedforward, all in world ENU."""
+        self.set_target_enu(pos[0], pos[1], pos[2], yaw=yaw)
+        self._velocity_ned = (
+            (float(vel[1]), float(vel[0]), float(-vel[2])) if vel is not None else None)
+        self._accel_ned = (
+            (float(accel[1]), float(accel[0]), float(-accel[2])) if accel is not None else None)
+
     def publish_heartbeat(self):
         """Publish one offboard-mode + setpoint pair. Call at >= 2 Hz (we use the
         node's control rate). PX4 drops out of offboard if this stops."""
-        if self._target_ned is None:
+        if self._target_ned is None and self._velocity_ned is None:
             return
         now = self._now_us()
+        scheme = self.control_scheme
 
         ocm = self._OffboardControlMode()
         ocm.timestamp = now
-        ocm.position = True
-        ocm.velocity = False
-        ocm.acceleration = False
+        ocm.position = scheme in ("position", "trajectory") and self._target_ned is not None
+        ocm.velocity = scheme in ("velocity", "trajectory") and self._velocity_ned is not None
+        ocm.acceleration = scheme == "trajectory" and self._accel_ned is not None
         ocm.attitude = False
         ocm.body_rate = False
         self._ocm_pub.publish(ocm)
 
+        # NaN means "don't control this field" (TrajectorySetpoint.msg).
+        nan = float("nan")
         sp = self._TrajectorySetpoint()
         sp.timestamp = now
-        sp.position = [self._target_ned[0], self._target_ned[1], self._target_ned[2]]
+        sp.position = list(self._target_ned) if ocm.position else [nan, nan, nan]
+        sp.velocity = list(self._velocity_ned) if ocm.velocity else [nan, nan, nan]
+        sp.acceleration = list(self._accel_ned) if ocm.acceleration else [nan, nan, nan]
         sp.yaw = self._yaw_ned
+        sp.yawspeed = self._yawspeed_ned
         self._sp_pub.publish(sp)
 
         self._ticks += 1
@@ -104,6 +147,11 @@ class PX4Commander:
         vc = self._VehicleCommand
         # base_mode custom (1), PX4 main mode OFFBOARD (6).
         self._send(vc.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
+
+    def land(self):
+        """Command PX4's own AUTO_LAND, used by mission_node's Terminate
+        (land_first) handling for drones running the 'local' deploy backend."""
+        self._send(self._VehicleCommand.VEHICLE_CMD_NAV_LAND)
 
     def arm(self):
         vc = self._VehicleCommand

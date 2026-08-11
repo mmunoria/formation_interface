@@ -1,0 +1,14 @@
+name: drone1
+namespace: px4_1                          # matches config/drones.yaml's drone_namespaces[0]
+system_id: 2                              # matches config/drones.yaml's system_ids[0]
+pose_topic: "/vrpn_mocap/drone1/pose"     # matches config/drones.yaml's pose_topics[0]
+pose_topic_type: PoseStamped
+capabilities: ["gps"]
+max_speed: 2.0                            # m/s
+max_accel: 1.5                            # m/s^2
+backend: mock_ssh                         # local | ssh | mock_ssh - safe default, no hardware
+ssh_host: ""                              # >>> set for backend: ssh <<<
+ssh_user: ""
+ssh_key_path: ""
+remote_workspace_path: "/home/px4/formation_ws"
+remote_log_dir: "/home/px4/formation_ws/logs"

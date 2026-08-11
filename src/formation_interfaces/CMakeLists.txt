@@ -11,8 +11,11 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GoToFormation.action"
+  "action/ExecuteFlight.action"
   "msg/DronePose.msg"
   "msg/DroneActive.msg"
+  "msg/DroneTelemetry.msg"
+  "srv/TerminateFlight.srv"
   DEPENDENCIES geometry_msgs
 )
 
